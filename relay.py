@@ -20,6 +20,11 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
+# Совместимость с JSON-литералами
+true = True
+false = False
+null = None
+
 STATE_FILE = "seen_posts.json"
 
 CONFIG_RULES = [
@@ -29,19 +34,19 @@ CONFIG_RULES = [
     "source": "telegram",
     "vk_token": "",
     "discord_webhook": "",
-    "use_webhook_profile": true,
+    "use_webhook_profile": True,
     "bot_name": "",
     "bot_avatar": "",
     "custom_emoji": "✈️",
     "title_template": "{emoji} Telegram: {title}",
     "content_template": "📢 **Новый пост из [{channel}](<{url}>)**",
-    "show_author": true,
-    "show_footer": true,
+    "show_author": True,
+    "show_footer": True,
     "embed_color": "#24A1DE",
     "interval_sec": 120,
     "filter_keywords": [],
     "exclude_keywords": [],
-    "include_link": true
+    "include_link": True
   },
   {
     "name": "VK: Хабр (Без приложений и без токенов)",
@@ -49,19 +54,19 @@ CONFIG_RULES = [
     "source": "habr",
     "vk_token": "",
     "discord_webhook": "",
-    "use_webhook_profile": true,
+    "use_webhook_profile": True,
     "bot_name": "",
     "bot_avatar": "",
     "custom_emoji": "🔵",
     "title_template": "{emoji} ВКонтакте: {title}",
     "content_template": "📢 **Новый пост из [{channel}](<{url}>)**",
-    "show_author": true,
-    "show_footer": true,
+    "show_author": True,
+    "show_footer": True,
     "embed_color": "#4C75A3",
     "interval_sec": 180,
     "filter_keywords": [],
     "exclude_keywords": [],
-    "include_link": true
+    "include_link": True
   },
   {
     "name": "TG: https://t.me/basoy_channel",
@@ -69,39 +74,39 @@ CONFIG_RULES = [
     "source": "basoy_channel",
     "vk_token": "",
     "discord_webhook": "https://discord.com/api/webhooks/1550822342777774153/rlbyCcPgYqnHUBN4ccY3IpihRXSGsP6ilB6vZvx0rx6_Is9C51ShfJeqCTAugx1QrcNu",
-    "use_webhook_profile": true,
+    "use_webhook_profile": True,
     "bot_name": "",
     "bot_avatar": "",
     "custom_emoji": "✈️",
     "title_template": "{title}",
     "content_template": "<@&1550816885094752297>",
-    "show_author": false,
-    "show_footer": true,
+    "show_author": False,
+    "show_footer": True,
     "embed_color": "#5865F2",
     "interval_sec": 60,
     "filter_keywords": [],
     "exclude_keywords": [],
-    "include_link": true
+    "include_link": True
   },
   {
     "name": "VK: https://vk.ru/rmroleplay",
     "type": "vk",
-    "source": "https:",
+    "source": "rmroleplay",
     "vk_token": "",
     "discord_webhook": "https://discord.com/api/webhooks/1550822342777774153/rlbyCcPgYqnHUBN4ccY3IpihRXSGsP6ilB6vZvx0rx6_Is9C51ShfJeqCTAugx1QrcNu",
-    "use_webhook_profile": true,
+    "use_webhook_profile": True,
     "bot_name": "",
     "bot_avatar": "",
     "custom_emoji": "🔵",
     "title_template": "{title}",
     "content_template": "<@&1550816885094752297>",
-    "show_author": false,
-    "show_footer": true,
+    "show_author": False,
+    "show_footer": True,
     "embed_color": "#5865F2",
     "interval_sec": 60,
     "filter_keywords": [],
     "exclude_keywords": [],
-    "include_link": true
+    "include_link": True
   }
 ]
 
@@ -125,8 +130,9 @@ def save_seen_posts(seen_set):
 seen_post_ids = load_seen_posts()
 
 def clean_source(text):
-    text = re.sub(r"^https?://(t\.me|vk\.com)/", "", text)
-    text = text.lstrip("@").split("/")[0]
+    text = str(text or "").strip()
+    text = re.sub(r"^https?://[^/]+/", "", text)
+    text = text.lstrip("@").strip("/").split("/")[0].split("?")[0]
     return text
 
 def fetch_telegram(channel_input):
@@ -357,7 +363,6 @@ def send_to_discord(webhook_url, post, rule):
         "embeds": [embed]
     }
 
-    # Если включен профиль вебкуха (или имя не задано), Discord использует нативное имя и аватарку!
     use_native = rule.get("use_webhook_profile", True) and not (rule.get("bot_name") or "").strip()
     if not use_native:
         if rule.get("bot_name", "").strip():
@@ -390,7 +395,6 @@ def check_rule(rule):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверка {rule['type']}: {rule['source']}...")
         posts = fetch_vk(rule["source"], rule.get("vk_token")) if rule["type"] == "vk" else fetch_telegram(rule["source"])
         
-        # Разворачиваем в хронологический порядок
         posts = list(reversed(posts))
 
         for post in posts:
@@ -398,7 +402,6 @@ def check_rule(rule):
             if p_id in seen_post_ids:
                 continue
 
-            # Фильтры
             lower_text = post["text"].lower()
             inc = rule.get("filter_keywords", [])
             exc = rule.get("exclude_keywords", [])
@@ -414,7 +417,7 @@ def check_rule(rule):
             send_to_discord(webhook, post, rule)
             seen_post_ids.add(p_id)
             save_seen_posts(seen_post_ids)
-            time.sleep(1) # задержка против rate limits
+            time.sleep(1)
 
     except Exception as e:
         print(f"[ERROR {rule['name']}]: {e}")
@@ -422,7 +425,6 @@ def check_rule(rule):
 def main():
     print("=== Запуск Python Relay: VK & Telegram -> Discord ===")
     
-    # Поддержка облачных хостингов (Render, Koyeb, Railway) для прохождения Health Check
     port_str = os.environ.get("PORT")
     if port_str:
         import threading
@@ -450,7 +452,6 @@ def main():
 
     while True:
         for rule in CONFIG_RULES:
-            # Поддержка вебхука из переменной окружения
             env_hook = os.environ.get("DISCORD_WEBHOOK")
             if env_hook:
                 rule["discord_webhook"] = env_hook
