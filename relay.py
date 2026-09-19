@@ -29,46 +29,6 @@ STATE_FILE = "seen_posts.json"
 
 CONFIG_RULES = [
   {
-    "name": "Telegram: Новости технологий",
-    "type": "telegram",
-    "source": "telegram",
-    "vk_token": "",
-    "discord_webhook": "",
-    "use_webhook_profile": True,
-    "bot_name": "",
-    "bot_avatar": "",
-    "custom_emoji": "✈️",
-    "title_template": "{emoji} Telegram: {title}",
-    "content_template": "📢 **Новый пост из [{channel}](<{url}>)**",
-    "show_author": True,
-    "show_footer": True,
-    "embed_color": "#24A1DE",
-    "interval_sec": 120,
-    "filter_keywords": [],
-    "exclude_keywords": [],
-    "include_link": True
-  },
-  {
-    "name": "VK: Хабр (Без приложений и без токенов)",
-    "type": "vk",
-    "source": "habr",
-    "vk_token": "",
-    "discord_webhook": "",
-    "use_webhook_profile": True,
-    "bot_name": "",
-    "bot_avatar": "",
-    "custom_emoji": "🔵",
-    "title_template": "{emoji} ВКонтакте: {title}",
-    "content_template": "📢 **Новый пост из [{channel}](<{url}>)**",
-    "show_author": True,
-    "show_footer": True,
-    "embed_color": "#4C75A3",
-    "interval_sec": 180,
-    "filter_keywords": [],
-    "exclude_keywords": [],
-    "include_link": True
-  },
-  {
     "name": "TG: https://t.me/basoy_channel",
     "type": "telegram",
     "source": "basoy_channel",
@@ -128,6 +88,8 @@ def save_seen_posts(seen_set):
         print(f"Ошибка сохранения {STATE_FILE}: {e}")
 
 seen_post_ids = load_seen_posts()
+is_first_start = not os.path.exists(STATE_FILE) or len(seen_post_ids) == 0
+initialized_sources = set()
 
 def clean_source(text):
     text = str(text or "").strip()
@@ -137,90 +99,93 @@ def clean_source(text):
 
 def fetch_telegram(channel_input):
     channel = clean_source(channel_input)
+    if not channel:
+        raise ValueError("Укажите корректный юзернейм Telegram канала")
+
     url = f"https://t.me/s/{channel}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"
     }
-    
-    resp = requests.get(url, headers=headers, timeout=10)
+    resp = requests.get(url, headers=headers, timeout=12)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    title_el = soup.find("div", class_="tgme_channel_info_header_title")
-    title = title_el.get_text(strip=True) if title_el else channel
+    title_el = soup.select_one(".tgme_channel_info_header_title")
+    channel_name = title_el.get_text(strip=True) if title_el else channel
 
-    avatar_el = soup.find("img", class_="tgme_page_photo_image")
-    avatar = avatar_el.get("src") if avatar_el else ""
+    avatar_el = soup.select_one(".tgme_page_photo_image img")
+    channel_avatar = avatar_el.get("src") if avatar_el else ""
 
     posts = []
-    wraps = soup.find_all("div", class_="tgme_widget_message_wrap")
-
-    for wrap in wraps:
-        msg = wrap.find("div", class_="tgme_widget_message")
-        if not msg:
-            continue
-        data_post = msg.get("data-post")
-        if not data_post:
+    for msg in soup.select(".tgme_widget_message"):
+        raw_post_id = msg.get("data-post")
+        if not raw_post_id:
             continue
 
-        text_el = msg.find("div", class_="tgme_widget_message_text")
+        p_id = f"tg_{raw_post_id.replace('/', '_')}"
+        p_url = f"https://t.me/{raw_post_id}"
+
+        text_el = msg.select_one(".tgme_widget_message_text")
         text = text_el.get_text(separator="\n", strip=True) if text_el else ""
 
         images = []
-        photos = msg.find_all("a", class_="tgme_widget_message_photo_wrap")
-        for p in photos:
-            style = p.get("style", "")
+        for photo in msg.select(".tgme_widget_message_photo_wrap"):
+            style = photo.get("style", "")
             if "url(" in style:
-                bg_url = style.split("url(")[1].split(")")[0].replace("'", "").replace('"', '').strip()
-                if bg_url and bg_url not in images:
-                    images.append(bg_url)
+                img_url = style.split("url(")[1].split(")")[0].replace("'", "").replace('"', '').strip()
+                if img_url and img_url not in images:
+                    images.append(img_url)
 
-        time_el = msg.find("time")
-        dt_str = time_el.get("datetime") if time_el else None
+        time_el = msg.select_one("time")
+        iso_time = time_el.get("datetime") if time_el else datetime.utcnow().isoformat() + "Z"
 
         if text or images:
             posts.append({
-                "id": data_post,
-                "title": title,
-                "avatar": avatar,
+                "id": p_id,
+                "title": channel_name,
+                "avatar": channel_avatar,
                 "text": text,
                 "images": images,
-                "url": f"https://t.me/{data_post}",
-                "iso_time": dt_str or datetime.utcnow().isoformat()
+                "url": p_url,
+                "iso_time": iso_time
             })
 
     return posts
 
-def fetch_vk(source_input, vk_token):
+def fetch_vk(source_input, token=None):
     cleaned = clean_source(source_input)
-    
-    # 1. Если задан токен, используем wall.get
-    if vk_token and vk_token.strip():
+    if not cleaned:
+        raise ValueError("Укажите корректный адрес группы ВКонтакте")
+
+    # 1. Если задан токен, используем официальный wall.get API
+    if token and str(token).strip():
         try:
+            owner_param = f"-{cleaned.replace('public', '').replace('club', '')}" if cleaned.isdigit() or cleaned.startswith(('public', 'club')) else None
+            domain_param = cleaned if not owner_param else None
+
             params = {
                 "v": "5.199",
-                "access_token": vk_token.strip(),
+                "access_token": token.strip(),
                 "count": 10,
-                "extended": 1,
+                "extended": 1
             }
-            if re.match(r"^\d+$", cleaned):
-                params["owner_id"] = f"-{cleaned}"
+            if owner_param:
+                params["owner_id"] = owner_param
             else:
-                params["domain"] = cleaned
+                params["domain"] = domain_param
 
-            resp = requests.get("https://api.vk.com/method/wall.get", params=params, timeout=10)
-            data = resp.json()
-            if "error" not in data:
-                response = data.get("response", {})
-                groups = response.get("groups", [])
+            api_res = requests.get("https://api.vk.com/method/wall.get", params=params, timeout=10).json()
+            if "response" in api_res:
+                resp_data = api_res["response"]
+                groups = resp_data.get("groups", [])
                 group_name = groups[0].get("name", cleaned) if groups else cleaned
                 group_avatar = groups[0].get("photo_200", "") if groups else ""
 
                 posts = []
-                for item in response.get("items", []):
-                    post_id = f"vk_{item['owner_id']}_{item['id']}"
-                    post_url = f"https://vk.com/wall{item['owner_id']}_{item['id']}"
+                for item in resp_data.get("items", []):
+                    post_id = f"vk_{item.get('owner_id')}_{item.get('id')}"
+                    post_url = f"https://vk.com/wall{item.get('owner_id')}_{item.get('id')}"
                     text = item.get("text", "")
 
                     images = []
@@ -244,7 +209,7 @@ def fetch_vk(source_input, vk_token):
         except Exception:
             pass
 
-    # 2. Парсер публичного виджета ВКонтакте (без токена и без приложений)
+    # 2. Публичный виджет сообществ ВКонтакте (без токена и без приложений)
     numeric_gid = ""
     if re.match(r"^\d+$", cleaned):
         numeric_gid = cleaned
@@ -265,7 +230,7 @@ def fetch_vk(source_input, vk_token):
     if not numeric_gid:
         raise RuntimeError(f"Не удалось определить числовой ID группы для {cleaned}")
 
-    w_url = f"https://vk.com/widget_community.php?app=0&width=auto&_ver=1&gid={numeric_gid}&mode=4"
+    w_url = f"https://vk.com/widget_community.php?app=0&width=auto&_ver=1&gid={numeric_gid}&mode=2"
     w_resp = requests.get(w_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
     w_resp.encoding = "windows-1251"
 
@@ -363,6 +328,7 @@ def send_to_discord(webhook_url, post, rule):
         "embeds": [embed]
     }
 
+    # Если включен профиль вебхука, Discord использует нативное имя и аватарку из настроек интеграции
     use_native = rule.get("use_webhook_profile", True) and not (rule.get("bot_name") or "").strip()
     if not use_native:
         if rule.get("bot_name", "").strip():
@@ -395,13 +361,26 @@ def check_rule(rule):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверка {rule['type']}: {rule['source']}...")
         posts = fetch_vk(rule["source"], rule.get("vk_token")) if rule["type"] == "vk" else fetch_telegram(rule["source"])
         
+        # Разворачиваем в хронологический порядок
         posts = list(reversed(posts))
+
+        # Защита от спама старыми постами при первом запуске:
+        # Запоминаем текущие посты как прочитанные, ждем только свежие публикации
+        src_key = f"{rule['type']}:{rule['source']}"
+        if is_first_start and src_key not in initialized_sources:
+            initialized_sources.add(src_key)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [ИНФО {rule['name']}]: Первый запуск! Найдено {len(posts)} постов. Запоминаем их в историю ({STATE_FILE}), старые посты НЕ отправляются в Discord.")
+            for post in posts:
+                seen_post_ids.add(post["id"])
+            save_seen_posts(seen_post_ids)
+            return
 
         for post in posts:
             p_id = post["id"]
             if p_id in seen_post_ids:
                 continue
 
+            # Фильтры
             lower_text = post["text"].lower()
             inc = rule.get("filter_keywords", [])
             exc = rule.get("exclude_keywords", [])
@@ -417,7 +396,7 @@ def check_rule(rule):
             send_to_discord(webhook, post, rule)
             seen_post_ids.add(p_id)
             save_seen_posts(seen_post_ids)
-            time.sleep(1)
+            time.sleep(1) # задержка против rate limits
 
     except Exception as e:
         print(f"[ERROR {rule['name']}]: {e}")
@@ -425,6 +404,7 @@ def check_rule(rule):
 def main():
     print("=== Запуск Python Relay: VK & Telegram -> Discord ===")
     
+    # Поддержка облачных хостингов (Render, Koyeb, Railway) для прохождения Health Check
     port_str = os.environ.get("PORT")
     if port_str:
         import threading
@@ -452,6 +432,7 @@ def main():
 
     while True:
         for rule in CONFIG_RULES:
+            # Поддержка вебхука из переменной окружения
             env_hook = os.environ.get("DISCORD_WEBHOOK")
             if env_hook:
                 rule["discord_webhook"] = env_hook
