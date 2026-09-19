@@ -125,7 +125,7 @@ def save_seen_posts(seen_set):
 seen_post_ids = load_seen_posts()
 
 def clean_source(text):
-    text = re.sub(r"^https?://(t.me|vk.com)/", "", text)
+    text = re.sub(r"^https?://(t\.me|vk\.com)/", "", text)
     text = text.lstrip("@").split("/")[0]
     return text
 
@@ -165,9 +165,10 @@ def fetch_telegram(channel_input):
         photos = msg.find_all("a", class_="tgme_widget_message_photo_wrap")
         for p in photos:
             style = p.get("style", "")
-            m = re.search(r"background-image:url\('(.*?)'\)", style)
-            if m:
-                images.append(m.group(1))
+            if "url(" in style:
+                bg_url = style.split("url(")[1].split(")")[0].replace("'", "").replace('"', '').strip()
+                if bg_url and bg_url not in images:
+                    images.append(bg_url)
 
         time_el = msg.find("time")
         dt_str = time_el.get("datetime") if time_el else None
@@ -247,11 +248,11 @@ def fetch_vk(source_input, vk_token):
         numeric_gid = re.sub(r"^(public|club)", "", cleaned, flags=re.IGNORECASE)
     else:
         page_resp = requests.get(f"https://vk.com/{cleaned}", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        m = re.search(r'"owner_id":s*(-?d+)', page_resp.text)
+        m = re.search(r'"owner_id":\s*(-?\d+)', page_resp.text)
         if m:
             numeric_gid = m.group(1).lstrip("-")
         else:
-            m2 = re.search(r'(?:public|club|group_id|gid)["s:=_-]+(d{4,12})', page_resp.text, re.IGNORECASE)
+            m2 = re.search(r'(?:public|club|group_id|gid)["\s:=_-]+(\d{4,12})', page_resp.text, re.IGNORECASE)
             if m2:
                 numeric_gid = m2.group(1)
 
@@ -272,7 +273,7 @@ def fetch_vk(source_input, vk_token):
     posts = []
     for el in soup.find_all(class_="wall_post_cont"):
         raw_id = el.get("id", "")
-        m = re.search(r"wpt(-?d+)_(d+)", raw_id)
+        m = re.search(r"wpt(-?\d+)_(\d+)", raw_id)
         owner_id = m.group(1) if m else f"-{numeric_gid}"
         item_id = m.group(2) if m else str(int(time.time()))
         post_id = f"vk_{owner_id}_{item_id}"
@@ -289,9 +290,10 @@ def fetch_vk(source_input, vk_token):
 
         for div in el.find_all(style=re.compile(r"background-image")):
             st = div.get("style", "")
-            m_bg = re.search(r"background-image:s*url(['"]?(.*?)['"]?)", st)
-            if m_bg and m_bg.group(1) and m_bg.group(1) not in images:
-                images.append(m_bg.group(1))
+            if "url(" in st:
+                bg_url = st.split("url(")[1].split(")")[0].replace("'", "").replace('"', '').strip()
+                if bg_url and bg_url not in images:
+                    images.append(bg_url)
 
         if text or images:
             posts.append({
@@ -317,11 +319,13 @@ def send_to_discord(webhook_url, post, rule):
 
     title_tmpl = rule.get("title_template")
     if title_tmpl and title_tmpl.strip():
-        embed_title = title_tmpl.replace("{emoji}", emoji)\
-            .replace("{source}", "ВКонтакте" if rule["type"] == "vk" else "Telegram")\
-            .replace("{title}", post["title"])\
-            .replace("{channel}", post["title"])\
+        embed_title = (
+            title_tmpl.replace("{emoji}", emoji)
+            .replace("{source}", "ВКонтакте" if rule["type"] == "vk" else "Telegram")
+            .replace("{title}", post["title"])
+            .replace("{channel}", post["title"])
             .replace("{author}", post["title"])
+        )
     else:
         embed_title = f"{emoji} {'ВКонтакте' if rule['type'] == 'vk' else 'Telegram'}: {post['title']}"
 
@@ -364,11 +368,13 @@ def send_to_discord(webhook_url, post, rule):
     if rule.get("include_link", True):
         content_tmpl = rule.get("content_template")
         if content_tmpl and content_tmpl.strip():
-            payload["content"] = content_tmpl.replace("{emoji}", emoji)\
-                .replace("{source}", "ВКонтакте" if rule["type"] == "vk" else "Telegram")\
-                .replace("{channel}", post["title"])\
-                .replace("{author}", post["title"])\
+            payload["content"] = (
+                content_tmpl.replace("{emoji}", emoji)
+                .replace("{source}", "ВКонтакте" if rule["type"] == "vk" else "Telegram")
+                .replace("{channel}", post["title"])
+                .replace("{author}", post["title"])
                 .replace("{url}", post["url"])
+            )
         else:
             payload["content"] = f"{emoji} **Новый пост из [{post['title']}](<{post['url']}>)**"
 
